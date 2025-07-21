@@ -7,41 +7,59 @@ import { oneDark } from "@codemirror/theme-one-dark";
 export default function JSRunner() {
   const [code, setCode] = useState("console.log('Hello, Dev Playground!')");
   const [output, setOutput] = useState<string[]>([]);
-  const [srcDoc, setSrcDoc] = useState('');
+  const [srcDoc, setSrcDoc] = useState<string>("");
   const [execTime, setExecTime] = useState<number | null>(null);
   const [memory, setMemory] = useState<number | null>(null);
   const [showInspector, setShowInspector] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [sandboxGlobals, setSandboxGlobals] = useState<any>({});
+  const [sandboxGlobals, setSandboxGlobals] = useState<string[]>([]);
 
   const runCode = () => {
     setOutput([]);
     setExecTime(null);
     setMemory(null);
-    setSandboxGlobals({});
-    const script = `
-      const __start = performance.now();
-      window.console = {
-        log: (...args) => parent.postMessage({ type: 'log', args }, '*'),
-        error: (...args) => parent.postMessage({ type: 'error', args }, '*'),
-        warn: (...args) => parent.postMessage({ type: 'warn', args }, '*'),
-        info: (...args) => parent.postMessage({ type: 'info', args }, '*'),
-      };
-      try {
-        ${code}
-      } catch (e) {
-        parent.postMessage({ type: 'error', args: [e.message] }, '*');
-      }
-      const __end = performance.now();
-      parent.postMessage({ type: 'timer', args: [__end - __start] }, '*');
-      if (window.performance && performance.memory) {
-        parent.postMessage({ type: 'memory', args: [performance.memory.usedJSHeapSize] }, '*');
-      }
-      // Inspector: send global keys
-      parent.postMessage({ type: 'globals', args: [Object.keys(window).filter(k => !k.startsWith('_') && !k.startsWith('webkit'))] }, '*');
+    setSandboxGlobals([]);
+
+    // Pre-parse code for syntax errors
+    try {
+      // This will throw if there's a syntax error
+      new Function(code);
+    } catch (err) {
+      setOutput([`[error] ${err instanceof Error ? err.message : String(err)}`]);
+      return;
+    }
+
+    const html = `
+      <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+          parent.postMessage({ type: 'error', args: [message] }, '*');
+        };
+        const __start = performance.now();
+        window.console = {
+          log: (...args) => parent.postMessage({ type: 'log', args }, '*'),
+          error: (...args) => parent.postMessage({ type: 'error', args }, '*'),
+          warn: (...args) => parent.postMessage({ type: 'warn', args }, '*'),
+          info: (...args) => parent.postMessage({ type: 'info', args }, '*'),
+        };
+        try {
+          ${code}
+        } catch (e) {
+          let msg = (e && e.message) ? e.message : (typeof e === 'string' ? e : JSON.stringify(e));
+          parent.postMessage({ type: 'error', args: [msg] }, '*');
+        }
+        const __end = performance.now();
+        parent.postMessage({ type: 'timer', args: [__end - __start] }, '*');
+        if (window.performance && performance.memory) {
+          parent.postMessage({ type: 'memory', args: [performance.memory.usedJSHeapSize] }, '*');
+        }
+        parent.postMessage({ type: 'globals', args: [Object.keys(window).filter(k => !k.startsWith('_') && !k.startsWith('webkit'))] }, '*');
+      <\/script>
     `;
-    setSrcDoc(`<script>${script}<\/script>`);
+    setSrcDoc(html);
+    if (iframeRef.current) {
+      iframeRef.current.srcdoc = html;
+    }
   };
 
   useEffect(() => {
@@ -50,6 +68,7 @@ export default function JSRunner() {
       if (e.data.type === 'timer') setExecTime(e.data.args[0]);
       else if (e.data.type === 'memory') setMemory(e.data.args[0]);
       else if (e.data.type === 'globals') setSandboxGlobals(e.data.args[0]);
+      else if (e.data.type === 'error') setOutput((prev) => [...prev, `[error] ${e.data.args.join(' ')}`]);
       else setOutput((prev) => [...prev, `[${e.data.type}] ${e.data.args.join(' ')}`]);
     };
     window.addEventListener("message", handler);
